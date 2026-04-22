@@ -354,8 +354,8 @@
 <script>
 // ─── CONFIG FIREBASE ──────────────────────────────────────────────────────────
 // 🔧 Remplacez ces valeurs par celles de votre projet Firebase
-const FIREBASE_PROJECT_ID = 'radar-b5629';
-const FIREBASE_API_KEY    = 'AIzaSyAWcWK7y6fc8ZCW3Eo0p38R1H_xoryKFmo';
+const FIREBASE_PROJECT_ID = 'VOTRE_PROJECT_ID';
+const FIREBASE_API_KEY    = 'VOTRE_API_KEY';
 const FIRESTORE_BASE = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents`;
 
 // ─── STATE ────────────────────────────────────────────────────────────────────
@@ -516,16 +516,68 @@ function cancelAlert() {
   if (navigator.vibrate) navigator.vibrate(0);
 }
 
-// ─── SOUND ────────────────────────────────────────────────────────────────────
+// ─── SOUND — Fix autoplay mobile ─────────────────────────────────────────────
+let audioCtx        = null;
+let audioUnlocked   = false;
+let pendingPlay     = false;
+let audioBuffer     = null;
+let audioSource     = null;
+
+// Déverrouille l'AudioContext au premier toucher utilisateur
+function unlockAudio() {
+  if (audioUnlocked) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  // Charge le fichier mp3 en buffer
+  fetch('assets/alert.mp3')
+    .then(r => r.arrayBuffer())
+    .then(buf => audioCtx.decodeAudioData(buf))
+    .then(decoded => {
+      audioBuffer = decoded;
+      audioUnlocked = true;
+      console.log('[Sound] AudioContext déverrouillé et buffer chargé');
+      // Si une alerte attendait le son, le jouer maintenant
+      if (pendingPlay && !muted) _playBuffer();
+    })
+    .catch(e => console.warn('[Sound] Erreur chargement buffer:', e));
+}
+
+function _playBuffer() {
+  if (!audioBuffer || !audioCtx || audioSource) return;
+  // Reprendre le contexte si suspendu (iOS)
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  audioSource = audioCtx.createBufferSource();
+  audioSource.buffer = audioBuffer;
+  audioSource.loop   = true;
+  audioSource.connect(audioCtx.destination);
+  audioSource.start(0);
+  console.log('[Sound] Lecture démarrée');
+}
+
+function _stopBuffer() {
+  if (audioSource) {
+    try { audioSource.stop(); } catch(_) {}
+    audioSource.disconnect();
+    audioSource = null;
+    console.log('[Sound] Lecture arrêtée');
+  }
+}
+
 function playSound() {
-  if (alertSound) return;
-  alertSound = new Audio('assets/alert.mp3');
-  alertSound.loop = true;
-  alertSound.volume = 1.0;
-  alertSound.play().catch(e => console.warn('[Sound]', e));
+  if (muted) return;
+  if (!audioUnlocked) {
+    // Le son jouera dès que l'AudioContext sera déverrouillé
+    pendingPlay = true;
+    console.log('[Sound] En attente déverrouillage...');
+    return;
+  }
+  pendingPlay = false;
+  _playBuffer();
 }
 
 function stopSound() {
+  pendingPlay = false;
+  _stopBuffer();
+  // Fallback : arrêter aussi l'ancien alertSound si présent
   if (alertSound) { alertSound.pause(); alertSound = null; }
 }
 
@@ -534,7 +586,10 @@ function toggleMute() {
   const btn = document.getElementById('mute-btn');
   btn.textContent = muted ? '🔇 MUET' : '🔊 SON';
   btn.classList.toggle('muted', muted);
-  if (muted) { stopSound(); if (navigator.vibrate) navigator.vibrate(0); }
+  if (muted) {
+    stopSound();
+    if (navigator.vibrate) navigator.vibrate(0);
+  }
 }
 
 // ─── NOTIFICATIONS ────────────────────────────────────────────────────────────
@@ -678,6 +733,13 @@ if ('serviceWorker' in navigator) {
 }
 
 // ─── INIT ─────────────────────────────────────────────────────────────────────
+
+// Déverrouiller l'audio au PREMIER toucher/clic de l'utilisateur
+// C'est la SEULE façon de contourner la politique autoplay des navigateurs mobiles
+['touchstart', 'touchend', 'mousedown', 'click'].forEach(evt => {
+  document.addEventListener(evt, unlockAudio, { once: false, passive: true });
+});
+
 startGPS();
 fetchRadars();
 // Polling toutes les 15 secondes
